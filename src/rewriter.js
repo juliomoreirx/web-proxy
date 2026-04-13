@@ -1,12 +1,16 @@
 const cheerio = require('cheerio');
 
-/**
- * Converte uma URL relativa em absoluta com base na origem do site
- */
 const toAbsolute = (url, origin) => {
-  if (!url || url.startsWith('data:') || url.startsWith('javascript:') || url.startsWith('#')) {
-    return url;
-  }
+  if (!url) return url;
+  url = url.trim();
+  if (
+    url.startsWith('data:') ||
+    url.startsWith('javascript:') ||
+    url.startsWith('mailto:') ||
+    url.startsWith('#') ||
+    url === ''
+  ) return url;
+  if (url.startsWith('//')) return 'https:' + url;
   try {
     return new URL(url, origin).href;
   } catch {
@@ -14,112 +18,187 @@ const toAbsolute = (url, origin) => {
   }
 };
 
-/**
- * Gera a URL que passa pelo nosso proxy
- */
 const toProxyUrl = (absoluteUrl, req) => {
+  if (!absoluteUrl || !absoluteUrl.startsWith('http')) return absoluteUrl;
   const base = `${req.protocol}://${req.get('host')}`;
   return `${base}/proxy?url=${encodeURIComponent(absoluteUrl)}`;
 };
 
-/**
- * Reescreve todo o HTML para que recursos e links passem pelo proxy
- */
-const rewriteHTML = (html, origin, req) => {
+// Reescreve url() dentro de arquivos CSS
+const rewriteCSS = (css, origin, req) => {
+  return css.replace(/url\(\s*(['"]?)([^)'"]+)\1\s*\)/gi, (match, quote, url) => {
+    const absolute = toAbsolute(url.trim(), origin);
+    if (!absolute || !absolute.startsWith('http')) return match;
+    const proxied = toProxyUrl(absolute, req);
+    return `url(${quote}${proxied}${quote})`;
+  });
+};
+
+const rewriteHTML = (html, origin, pageUrl, req) => {
   const $ = cheerio.load(html, { decodeEntities: false });
 
-  // Reescreve <a href="...">
+  // <base href> — remove para não interferir
+  $('base').remove();
+
+  // <a href>
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href');
-    const absolute = toAbsolute(href, origin);
-    if (absolute && absolute.startsWith('http')) {
-      $(el).attr('href', toProxyUrl(absolute, req));
-    }
+    const abs = toAbsolute(href, origin);
+    if (abs?.startsWith('http')) $(el).attr('href', toProxyUrl(abs, req));
   });
 
-  // Reescreve <link rel="stylesheet" href="...">
+  // <link href> — CSS, favicon, etc.
   $('link[href]').each((_, el) => {
     const href = $(el).attr('href');
-    const absolute = toAbsolute(href, origin);
-    if (absolute && absolute.startsWith('http')) {
-      $(el).attr('href', toProxyUrl(absolute, req));
-    }
+    const abs = toAbsolute(href, origin);
+    if (abs?.startsWith('http')) $(el).attr('href', toProxyUrl(abs, req));
   });
 
-  // Reescreve <script src="...">
+  // <script src>
   $('script[src]').each((_, el) => {
     const src = $(el).attr('src');
-    const absolute = toAbsolute(src, origin);
-    if (absolute && absolute.startsWith('http')) {
-      $(el).attr('src', toProxyUrl(absolute, req));
-    }
+    const abs = toAbsolute(src, origin);
+    if (abs?.startsWith('http')) $(el).attr('src', toProxyUrl(abs, req));
   });
 
-  // Reescreve <img src="..."> e <img srcset="...">
+  // <img src e srcset>
   $('img[src]').each((_, el) => {
     const src = $(el).attr('src');
-    const absolute = toAbsolute(src, origin);
-    if (absolute && absolute.startsWith('http')) {
-      $(el).attr('src', toProxyUrl(absolute, req));
-    }
+    const abs = toAbsolute(src, origin);
+    if (abs?.startsWith('http')) $(el).attr('src', toProxyUrl(abs, req));
   });
 
-  $('img[srcset]').each((_, el) => {
+  $('[srcset]').each((_, el) => {
     const srcset = $(el).attr('srcset');
-    const rewritten = srcset.split(',').map((part) => {
-      const [url, descriptor] = part.trim().split(/\s+/);
-      const absolute = toAbsolute(url, origin);
-      const proxied = absolute?.startsWith('http') ? toProxyUrl(absolute, req) : url;
-      return descriptor ? `${proxied} ${descriptor}` : proxied;
+    const rewritten = srcset.split(',').map(part => {
+      const [url, ...rest] = part.trim().split(/\s+/);
+      const abs = toAbsolute(url, origin);
+      const proxied = abs?.startsWith('http') ? toProxyUrl(abs, req) : url;
+      return [proxied, ...rest].join(' ');
     }).join(', ');
     $(el).attr('srcset', rewritten);
   });
 
-  // Reescreve <source srcset="..."> (para <picture> e <video>)
-  $('source[srcset]').each((_, el) => {
-    const src = $(el).attr('srcset');
-    const absolute = toAbsolute(src, origin);
-    if (absolute?.startsWith('http')) {
-      $(el).attr('srcset', toProxyUrl(absolute, req));
-    }
+  // <source src e srcset>
+  $('source[src]').each((_, el) => {
+    const src = $(el).attr('src');
+    const abs = toAbsolute(src, origin);
+    if (abs?.startsWith('http')) $(el).attr('src', toProxyUrl(abs, req));
   });
 
-  // Reescreve <form action="...">
+  // <video src>, <audio src>, <iframe src>
+  $('video[src], audio[src], iframe[src]').each((_, el) => {
+    const src = $(el).attr('src');
+    const abs = toAbsolute(src, origin);
+    if (abs?.startsWith('http')) $(el).attr('src', toProxyUrl(abs, req));
+  });
+
+  // <form action>
   $('form[action]').each((_, el) => {
     const action = $(el).attr('action');
-    const absolute = toAbsolute(action, origin);
-    if (absolute?.startsWith('http')) {
-      $(el).attr('action', toProxyUrl(absolute, req));
+    const abs = toAbsolute(action, origin);
+    if (abs?.startsWith('http')) $(el).attr('action', toProxyUrl(abs, req));
+  });
+
+  // style="background: url(...)" inline
+  $('[style]').each((_, el) => {
+    const style = $(el).attr('style');
+    if (style?.includes('url(')) {
+      $(el).attr('style', rewriteCSS(style, origin, req));
     }
   });
 
-  // Injeta script para interceptar navegação dinâmica (SPA/AJAX)
-  $('head').append(`
-    <script>
-      (function() {
-        const PROXY_BASE = '/proxy?url=';
-        const _open = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-          if (url && !url.startsWith('/proxy') && (url.startsWith('http') || url.startsWith('//'))) {
-            url = PROXY_BASE + encodeURIComponent(url.startsWith('//') ? 'https:' + url : url);
-          }
-          return _open.call(this, method, url, ...rest);
-        };
+  // <style> tags inline
+  $('style').each((_, el) => {
+    const css = $(el).html();
+    if (css) $(el).html(rewriteCSS(css, origin, req));
+  });
 
-        const _fetch = window.fetch;
-        window.fetch = function(input, init) {
-          let url = typeof input === 'string' ? input : input.url;
-          if (url && !url.startsWith('/proxy') && (url.startsWith('http') || url.startsWith('//'))) {
-            url = PROXY_BASE + encodeURIComponent(url.startsWith('//') ? 'https:' + url : url);
-            input = typeof input === 'string' ? url : new Request(url, input);
-          }
-          return _fetch(input, init);
-        };
-      })();
-    </script>
-  `);
+  // meta refresh
+  $('meta[http-equiv="refresh"]').each((_, el) => {
+    const content = $(el).attr('content');
+    if (content) {
+      const rewritten = content.replace(/url=(.+)/i, (_, url) => {
+        const abs = toAbsolute(url.trim(), origin);
+        return abs?.startsWith('http') ? `url=${toProxyUrl(abs, req)}` : `url=${url}`;
+      });
+      $(el).attr('content', rewritten);
+    }
+  });
+
+  // Injeta script de interceptação dinâmica
+  const proxyScript = `
+<script>
+(function() {
+  const PROXY = '/proxy?url=';
+  const BASE = '${origin}';
+
+  function proxify(url) {
+    if (!url || url.startsWith('/proxy') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
+    if (url.startsWith('//')) url = 'https:' + url;
+    if (url.startsWith('/')) url = BASE + url;
+    if (url.startsWith('http')) return PROXY + encodeURIComponent(url);
+    return url;
+  }
+
+  // Intercepta XHR
+  const _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    return _open.call(this, method, proxify(url), ...rest);
+  };
+
+  // Intercepta fetch
+  const _fetch = window.fetch;
+  window.fetch = function(input, init) {
+    if (typeof input === 'string') input = proxify(input);
+    else if (input instanceof Request) {
+      input = new Request(proxify(input.url), input);
+    }
+    return _fetch.call(window, input, init);
+  };
+
+  // Intercepta history pushState/replaceState
+  const _push = history.pushState;
+  history.pushState = function(state, title, url) {
+    if (url && !url.startsWith('/proxy') && url.startsWith('http')) {
+      url = PROXY + encodeURIComponent(url);
+    }
+    return _push.call(this, state, title, url);
+  };
+
+  // Intercepta criação dinâmica de elementos
+  const _createElement = document.createElement.bind(document);
+  document.createElement = function(tag, ...args) {
+    const el = _createElement(tag, ...args);
+    if (tag.toLowerCase() === 'script') {
+      const desc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+      Object.defineProperty(el, 'src', {
+        set(val) { desc.set.call(this, proxify(val)); },
+        get() { return desc.get.call(this); }
+      });
+    }
+    if (tag.toLowerCase() === 'img') {
+      const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      Object.defineProperty(el, 'src', {
+        set(val) { desc.set.call(this, proxify(val)); },
+        get() { return desc.get.call(this); }
+      });
+    }
+    return el;
+  };
+
+  // Desregistra service workers que possam interferir
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs => {
+      regs.forEach(r => r.unregister());
+    });
+  }
+})();
+</script>`;
+
+  $('head').prepend(proxyScript);
 
   return $.html();
 };
 
-module.exports = { rewriteHTML, toAbsolute, toProxyUrl };
+module.exports = { rewriteHTML, rewriteCSS, toAbsolute, toProxyUrl };

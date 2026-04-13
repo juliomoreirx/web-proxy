@@ -9,25 +9,24 @@ const { handleProxyRequest } = require('./proxy');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares de segurança e utilidade
 app.use(morgan('combined'));
 app.use(cors());
 app.use(helmet({
-  contentSecurityPolicy: false, // Desabilitado para permitir recursos externos
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: false,
 }));
-app.use(express.json());
 
-// Servir o frontend estático
+// Body parsers para suportar POST
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
 app.use(express.static(path.join(__dirname, '../public')));
 
-// =============================================
-// ROTA PRINCIPAL DO PROXY
-// Tudo que começa com /proxy/* é interceptado
-// =============================================
+// Suporta GET e POST
 app.get('/proxy', handleProxyRequest);
+app.post('/proxy', handleProxyRequest);
 
-// Health check para o Render
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => {
