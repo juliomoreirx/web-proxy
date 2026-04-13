@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Web Proxy</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' }
+  </script>
+  <style>
+    #iframe-container iframe {
+      width: 100%; height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-gray-800 px-6 py-4 flex items-center gap-4 bg-gray-900">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center text-white font-bold text-sm">P</div>
+      <span class="font-semibold text-lg tracking-tight">WebProxy</span>
+      <span class="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded-full">via Bright Data</span>
+    </div>
+
+    <!-- Barra de URL -->
+    <form id="proxy-form" class="flex flex-1 gap-2 max-w-3xl mx-auto">
+      <div class="flex flex-1 items-center bg-gray-800 border border-gray-700 rounded-lg px-4 gap-2 focus-within:border-violet-500 transition-colors">
+        <svg class="w-4 h-4 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/>
+        </svg>
+        <input
+          id="url-input"
+          type="text"
+          placeholder="https://example.com"
+          class="flex-1 bg-transparent py-2.5 text-sm outline-none placeholder-gray-600"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <button
+        type="submit"
+        id="load-btn"
+        class="bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
+      >
+        <span id="btn-text">Acessar</span>
+        <svg id="btn-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+        </svg>
+      </button>
+    </form>
+  </header>
+
+  <!-- Status bar -->
+  <div id="status-bar" class="hidden px-6 py-2 text-xs bg-gray-900 border-b border-gray-800 text-gray-400 flex items-center gap-2">
+    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+    <span id="status-text">Carregando...</span>
+  </div>
+
+  <!-- Error -->
+  <div id="error-box" class="hidden mx-6 mt-4 p-4 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm"></div>
+
+  <!-- Iframe container -->
+  <main id="iframe-container" class="flex-1 hidden">
+    <iframe id="proxy-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+  </main>
+
+  <!-- Empty state -->
+  <div id="empty-state" class="flex-1 flex flex-col items-center justify-center gap-4 text-center px-4">
+    <div class="w-16 h-16 rounded-2xl bg-gray-800 flex items-center justify-center text-3xl">🌐</div>
+    <h2 class="text-xl font-semibold text-gray-300">Navegue com privacidade</h2>
+    <p class="text-gray-500 text-sm max-w-sm">Digite uma URL acima para acessar qualquer site roteado pela rede residencial da Bright Data.</p>
+    <div class="flex gap-2 mt-2 flex-wrap justify-center">
+      <button onclick="loadUrl('https://example.com')" class="text-xs bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-full transition-colors">example.com</button>
+      <button onclick="loadUrl('https://httpbin.org/ip')" class="text-xs bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-full transition-colors">httpbin.org/ip</button>
+      <button onclick="loadUrl('https://whatismyipaddress.com')" class="text-xs bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-full transition-colors">whatismyip</button>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('proxy-form');
+    const input = document.getElementById('url-input');
+    const frame = document.getElementById('proxy-frame');
+    const container = document.getElementById('iframe-container');
+    const emptyState = document.getElementById('empty-state');
+    const statusBar = document.getElementById('status-bar');
+    const statusText = document.getElementById('status-text');
+    const errorBox = document.getElementById('error-box');
+    const loadBtn = document.getElementById('load-btn');
+    const btnText = document.getElementById('btn-text');
+    const btnSpinner = document.getElementById('btn-spinner');
+
+    function setLoading(loading) {
+      loadBtn.disabled = loading;
+      btnText.textContent = loading ? 'Carregando' : 'Acessar';
+      btnSpinner.classList.toggle('hidden', !loading);
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove('hidden');
+      setTimeout(() => errorBox.classList.add('hidden'), 5000);
+    }
+
+    function loadUrl(url) {
+      input.value = url;
+      navigateTo(url);
+    }
+
+    function navigateTo(url) {
+      if (!url) return showError('Digite uma URL válida.');
+      if (!url.startsWith('http')) url = 'https://' + url;
+
+      setLoading(true);
+      errorBox.classList.add('hidden');
+      statusBar.classList.remove('hidden');
+      statusText.textContent = `Conectando via Bright Data → ${url}`;
+      emptyState.classList.add('hidden');
+      container.classList.remove('hidden');
+
+      const proxyUrl = `/proxy?url=${encodeURIComponent(url)}`;
+      frame.src = proxyUrl;
+
+      frame.onload = () => {
+        setLoading(false);
+        statusText.textContent = `✓ Carregado: ${url}`;
+      };
+
+      frame.onerror = () => {
+        setLoading(false);
+        showError('Falha ao carregar a página.');
+        statusText.textContent = 'Erro ao carregar.';
+      };
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      navigateTo(input.value.trim());
+    });
+  </script>
+</body>
+</html>
